@@ -1,0 +1,23 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="sentence-transformers" />
+          <option value="transformers" />
+          <option value="keybert" />
+          <option value="rake-nltk" />
+          <option value="pdfplumber" />
+          <option value="PyPDF2" />
+          <option value="textstat" />
+          <option value="plotly" />
+          <option value="accelerate" />
+          <option value="datasets" />
+          <option value="evaluate" />
+          <option value="seqeval" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
