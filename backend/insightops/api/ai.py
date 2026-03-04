@@ -1,32 +1,54 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from insightops.services.ai_service import AIService
+
 from insightops.db.deps import get_db
 from insightops.models.incident import Incident
+from insightops.models.user import User
+from insightops.schemas.incident import AnalyzeRequest, AnalyzeResponse
+from insightops.services.ai_service import analyze_sentiment
+from insightops.core.security import get_current_user
 
-router = APIRouter(prefix="/ai", tags=["AI"])
-ai_service = AIService()
+router = APIRouter(
+    prefix="/ai",
+    tags=["AI"]
+)
 
-@router.post("/analyze")
-def analyze_text(text: str, db: Session = Depends(get_db)):
-    result = ai_service.analyze_text(text)[0]
+@router.post("/analyze", response_model=AnalyzeResponse)
+def analyze_text(
+    request: AnalyzeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
 
-    incident = Incident(
-        input_text=text,
+    result = analyze_sentiment(request.text)
+
+    new_incident = Incident(
+        text=request.text,
         sentiment=result["label"],
-        confidence=str(result["score"])
+        confidence=result["score"],
+        user_id=current_user.id  # 🔥 user-specific
     )
 
-    db.add(incident)
+    db.add(new_incident)
     db.commit()
-    db.refresh(incident)
+    db.refresh(new_incident)
 
-    return {
-        "id": incident.id,
-        "sentiment": incident.sentiment,
-        "confidence": incident.confidence
-    }
+    return AnalyzeResponse(
+        id=new_incident.id,
+        text=new_incident.text,
+        sentiment=new_incident.sentiment,
+        confidence=new_incident.confidence
+    )
+
 
 @router.get("/incidents")
-def get_incidents(db: Session = Depends(get_db)):
-    return db.query(Incident).all()
+def get_incidents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    incidents = db.query(Incident).filter(
+        Incident.user_id == current_user.id
+    ).all()
+
+    return incidents
