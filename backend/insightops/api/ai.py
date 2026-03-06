@@ -48,7 +48,7 @@ def get_incidents(
 ):
 
     incidents = db.query(Incident).filter(
-        Incident.user_id == current_user.id
+        Incident.id == current_user.id
     ).all()
 
     return incidents

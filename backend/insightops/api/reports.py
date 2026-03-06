@@ -18,27 +18,18 @@ def get_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-
-    incidents = db.query(Incident).filter(
-        Incident.user_id == current_user.id
-    ).all()
-
+    # Fetch incidents for the current user
+    incidents = db.query(Incident).filter(Incident.id == current_user.id).all()
     if not incidents:
         return {"message": "No incidents found"}
 
-    data = [
-        {
-            "sentiment": i.sentiment,
-            "confidence": float(i.confidence)
-        }
-        for i in incidents
-    ]
-
+    # Prepare data
+    data = [{"sentiment": i.sentiment, "confidence": float(i.confidence)} for i in incidents]
     df = pd.DataFrame(data)
 
+    # Statistics
     total_incidents = len(df)
     sentiment_distribution = df["sentiment"].value_counts().to_dict()
-
     average_confidence = np.mean(df["confidence"])
     std_confidence = np.std(df["confidence"])
 
