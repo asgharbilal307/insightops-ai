@@ -25,8 +25,9 @@ def analyze_text(
     new_incident = Incident(
         text=request.text,
         sentiment=result["label"],
+        severity=result["severity"],
         confidence=result["score"],
-        user_id=current_user.id  # 🔥 user-specific
+        user_id=current_user.id
     )
 
     db.add(new_incident)
@@ -37,6 +38,7 @@ def analyze_text(
         id=new_incident.id,
         text=new_incident.text,
         sentiment=new_incident.sentiment,
+        severity=new_incident.severity,
         confidence=new_incident.confidence
     )
 

@@ -31,6 +31,7 @@ class AnalyzeResponse(BaseModel):
     id: int
     text: str
     sentiment: str
+    severity: str
     confidence: float
 
     class Config:

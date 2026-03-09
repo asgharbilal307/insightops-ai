@@ -12,9 +12,6 @@ router = APIRouter(
     tags=["Authentication"]
 )
 
-# -----------------------------
-# Register endpoint
-# -----------------------------
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 def register(user: UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user.email).first()
@@ -31,9 +28,6 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
     return {"message": "User created successfully"}
 
-# -----------------------------
-# Login endpoint (OAuth2 compatible)
-# -----------------------------
 @router.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == form_data.username).first()
