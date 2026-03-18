@@ -30,9 +30,21 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     id: int
     text: str
+    category: str
     sentiment: str
     severity: str
     confidence: float
+    summary:str
 
     class Config:
         from_attributes = True
+
+class QARequest(BaseModel):
+    context: str
+    question: str
+
+# Response for Q&A
+class QAResponse(BaseModel):
+    question: str
+    answer: str
+    context: str
