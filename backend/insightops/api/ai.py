@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from insightops.db.deps import get_db
 from insightops.models.incident import Incident
 from insightops.models.user import User
-from insightops.schemas.incident import AnalyzeRequest, AnalyzeResponse,QARequest,QAResponse
-from insightops.services.ai_service import analyze_sentiment,answer_question
+from insightops.schemas.incident import AnalyzeRequest, AnalyzeResponse,QARequest,QAResponse,SimilarIncidentsRequest,SimilarIncidentsResponse
+from insightops.services.ai_service import analyze_sentiment,answer_question,find_similar_incidents,add_incident_to_faiss,search_similar_faiss
 from insightops.core.security import get_current_user
 
 router = APIRouter(
@@ -14,6 +14,18 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)]
 )
 
+
+@router.post("/similar-incidents", response_model=SimilarIncidentsResponse)
+def similar_incidents(request: SimilarIncidentsRequest):
+    similar = find_similar_incidents(request.text, request.incidents)
+
+    # convert to list of dicts
+    similar_list = [{"incident": inc, "score": score} for inc, score in similar]
+
+    return SimilarIncidentsResponse(
+        text=request.text,
+        similar_incidents=similar_list
+    )
 
 @router.post("/question", response_model=QAResponse)
 def ask_question(request: QARequest):
@@ -46,6 +58,7 @@ def analyze_text(
     db.add(new_incident)
     db.commit()
     db.refresh(new_incident)
+    add_incident_to_faiss(request.text)
 
     return AnalyzeResponse(
         id=new_incident.id,
@@ -69,3 +82,15 @@ def get_incidents(
     ).all()
 
     return incidents
+
+@router.post("/similar-faiss", response_model=SimilarIncidentsResponse)
+def faiss_endpoint(request: SimilarIncidentsRequest):
+
+    results = search_similar_faiss(request.text)
+
+    return SimilarIncidentsResponse(
+        text=request.text,
+        similar_incidents=[
+            {"incident": inc, "score": float(score)} for inc, score in results
+        ]
+    )

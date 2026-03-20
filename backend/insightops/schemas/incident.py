@@ -48,3 +48,11 @@ class QAResponse(BaseModel):
     question: str
     answer: str
     context: str
+
+class SimilarIncidentsRequest(BaseModel):
+    text: str
+    incidents: list[str]  # List of existing incidents to compare against
+
+class SimilarIncidentsResponse(BaseModel):
+    text: str
+    similar_incidents: list[dict]
