@@ -7,6 +7,8 @@ from insightops.db.deps import get_db
 from insightops.models.incident import Incident
 from insightops.models.user import User
 from insightops.core.security import get_current_user
+from insightops.services.alert_service import generate_alerts
+from insightops.services.trend_service import analyze_trends
 
 router = APIRouter(
     prefix="/reports",
@@ -102,4 +104,57 @@ def dashboard_analytics(
         "severity_distribution": severity_counts,
         "sentiment_distribution": sentiment_counts,
         "total_incidents": len(incidents)
+    }
+
+@router.get("/alerts")
+def get_alerts(
+    db: Session = Depends(get_db)
+):
+
+    incidents = db.query(Incident).all()
+
+    return generate_alerts(incidents)
+
+@router.get("/trends")
+def get_trends(
+    db: Session = Depends(get_db)
+):
+
+    incidents = db.query(Incident).all()
+
+    return analyze_trends(incidents)
+
+@router.get("/dashboard")
+def dashboard(
+    db: Session = Depends(get_db)
+):
+
+    incidents = db.query(Incident).all()
+
+    total = len(incidents)
+
+    critical = len([
+        i for i in incidents
+        if i.severity == "CRITICAL"
+    ])
+
+    high = len([
+        i for i in incidents
+        if i.severity == "HIGH"
+    ])
+
+    categories = {}
+
+    for incident in incidents:
+
+        if incident.category not in categories:
+            categories[incident.category] = 0
+
+        categories[incident.category] += 1
+
+    return {
+        "total_incidents": total,
+        "critical_incidents": critical,
+        "high_incidents": high,
+        "categories": categories
     }
