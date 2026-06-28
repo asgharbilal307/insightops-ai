@@ -23,3 +23,15 @@ class Incident(Base):
     category = Column(String)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Image analysis fields
+    extracted_text = Column(Text, nullable=True)
+    image_label = Column(String, nullable=True)
+    image_confidence = Column(Float, nullable=True)
+
+    # Audio analysis fields
+    audio_transcription = Column(Text, nullable=True)
+    audio_emotion = Column(String, nullable=True)
+
+    # Analysis type field
+    analysis_type = Column(String, nullable=True, default="text")

@@ -1,3 +1,4 @@
+from insightops.services.forecast_services import generate_forecast
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 import pandas as pd
@@ -50,7 +51,7 @@ def get_summary(
     current_user: User = Depends(get_current_user)
 ):
     # Fetch incidents for the current user
-    incidents = db.query(Incident).filter(Incident.id == current_user.id).all()
+    incidents = db.query(Incident).filter(Incident.user_id == current_user.id).all()
     if not incidents:
         return {"message": "No incidents found"}
 
@@ -71,8 +72,9 @@ def get_summary(
         "confidence_std_deviation": round(float(std_confidence), 4)
     }
 
+
 @router.get("/dashboard")
-def dashboard_analytics(
+def dashboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -81,29 +83,88 @@ def dashboard_analytics(
         Incident.user_id == current_user.id
     ).all()
 
-    severity_counts = {
-        "CRITICAL": 0,
-        "HIGH": 0,
-        "MEDIUM": 0,
-        "LOW": 0
-    }
+    total_incidents = len(incidents)
 
-    sentiment_counts = {
-        "POSITIVE": 0,
-        "NEGATIVE": 0
-    }
+    critical_incidents = 0
+    high_incidents = 0
+    medium_incidents = 0
+
+    categories = {}
+
+    def _incident_risk_level(incident):
+        sentiment = (incident.sentiment or "").upper()
+
+        try:
+            confidence = float(incident.confidence)
+        except:
+            confidence = 0.5
+
+        if incident.severity == "CRITICAL":
+            return "CRITICAL"
+        if incident.severity == "HIGH":
+            return "HIGH"
+
+        if sentiment == "NEGATIVE":
+            if confidence >= 0.90:
+                return "CRITICAL"
+            elif confidence >= 0.75:
+                return "HIGH"
+            return "MEDIUM"
+
+        if sentiment == "POSITIVE":
+            return "MEDIUM"
+
+        return "MEDIUM"
 
     for incident in incidents:
-        if incident.severity in severity_counts:
-            severity_counts[incident.severity] += 1
+        risk_level = _incident_risk_level(incident)
 
-        if incident.sentiment in sentiment_counts:
-            sentiment_counts[incident.sentiment] += 1
+        if risk_level == "CRITICAL":
+            critical_incidents += 1
+        elif risk_level == "HIGH":
+            high_incidents += 1
+        else:
+            medium_incidents += 1
+
+        category_key = incident.category or incident.analysis_type or "Other"
+        categories[category_key] = categories.get(category_key, 0) + 1
+
+    # -----------------------------------------
+    # AI RISK SCORE
+    # -----------------------------------------
+
+    if total_incidents == 0:
+        risk_score = 0
+    else:
+        critical_percent = (critical_incidents / total_incidents) * 60
+        high_percent = (high_incidents / total_incidents) * 30
+        medium_percent = (medium_incidents / total_incidents) * 10
+        risk_score = int(critical_percent + high_percent + medium_percent)
+
+    # -----------------------------------------
+    # TREND ANALYSIS
+    # -----------------------------------------
+
+    trend = "Stable"
+
+    if critical_incidents >= 7:
+        trend = "High Risk"
+
+    elif high_incidents >= 3:
+        trend = "Moderate Risk"
+
+    # -----------------------------------------
+    # RESPONSE
+    # -----------------------------------------
 
     return {
-        "severity_distribution": severity_counts,
-        "sentiment_distribution": sentiment_counts,
-        "total_incidents": len(incidents)
+        "total_incidents": total_incidents,
+        "critical_incidents": critical_incidents,
+        "high_incidents": high_incidents,
+        "medium_incidents": medium_incidents,
+        "risk_score": risk_score,
+        "trend": trend,
+        "categories": categories
     }
 
 @router.get("/alerts")
@@ -124,37 +185,14 @@ def get_trends(
 
     return analyze_trends(incidents)
 
-@router.get("/dashboard")
-def dashboard(
+
+
+@router.get("/forecast")
+def forecast_incidents(
     db: Session = Depends(get_db)
 ):
 
-    incidents = db.query(Incident).all()
 
-    total = len(incidents)
+    result = generate_forecast(db)
 
-    critical = len([
-        i for i in incidents
-        if i.severity == "CRITICAL"
-    ])
-
-    high = len([
-        i for i in incidents
-        if i.severity == "HIGH"
-    ])
-
-    categories = {}
-
-    for incident in incidents:
-
-        if incident.category not in categories:
-            categories[incident.category] = 0
-
-        categories[incident.category] += 1
-
-    return {
-        "total_incidents": total,
-        "critical_incidents": critical,
-        "high_incidents": high,
-        "categories": categories
-    }
+    return result

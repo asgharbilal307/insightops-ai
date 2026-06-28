@@ -1,83 +1,81 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from fastapi import UploadFile, File
 import os
+import shutil
+import tempfile
 
-from insightops.services.multimodel_service import (
-    analyze_image,
-    transcribe_audio,
-    detect_audio_emotion,
-    multimodal_analysis
-)
-from insightops.services.forecast_services import generate_forecast
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy.orm import Session
+
 from insightops.db.deps import get_db
 from insightops.models.incident import Incident
 from insightops.models.user import User
-from insightops.schemas.incident import AnalyzeRequest, AnalyzeResponse,QARequest,QAResponse,SimilarIncidentsRequest,SimilarIncidentsResponse
-from insightops.services.ai_service import analyze_sentiment,answer_question,find_similar_incidents,add_incident_to_faiss,search_similar_faiss
 from insightops.core.security import get_current_user
+from insightops.schemas.incident import AnalyzeRequest
+from insightops.services.ai_service import (
+    analyze_sentiment,
+    analyze_image_sentiment,
+    analyze_audio_sentiment,
+)
+from insightops.services.multimodel_service import (
+    analyze_image,
+    detect_audio_emotion,
+    transcribe_audio,
+    extract_text_from_image,
+)
 
 router = APIRouter(
     prefix="/ai",
-    tags=["AI"],
-    dependencies=[Depends(get_current_user)]
+    tags=["AI"]
 )
 
 
-@router.post("/similar-incidents", response_model=SimilarIncidentsResponse)
-def similar_incidents(request: SimilarIncidentsRequest):
-    similar = find_similar_incidents(request.text, request.incidents)
+def save_upload_file(upload_file: UploadFile) -> str:
+    suffix = os.path.splitext(upload_file.filename)[1] or ""
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
 
-    # convert to list of dicts
-    similar_list = [{"incident": inc, "score": score} for inc, score in similar]
+    try:
+        shutil.copyfileobj(upload_file.file, tmp_file)
+    finally:
+        tmp_file.close()
 
-    return SimilarIncidentsResponse(
-        text=request.text,
-        similar_incidents=similar_list
-    )
+    return tmp_file.name
 
-@router.post("/question", response_model=QAResponse)
-def ask_question(request: QARequest):
-    answer = answer_question(request.context, request.question)
 
-    return QAResponse(
-        question=request.question,
-        answer=answer,
-        context=request.context
-    )
-@router.post("/analyze", response_model=AnalyzeResponse)
+@router.post("/analyze")
 def analyze_text(
     request: AnalyzeRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    text = request.text.strip()
 
-    result = analyze_sentiment(request.text)
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required for analysis.")
 
-    new_incident = Incident(
-        text=request.text,
+    result = analyze_sentiment(text)
+
+    incident = Incident(
+        text=text,
         sentiment=result["label"],
+        confidence=result["score"],
         severity=result["severity"],
         category=result["category"],
-        confidence=result["score"],
-        summary=result.get("summary") or request.text,
-        user_id=current_user.id
+        summary=result["summary"],
+        user_id=current_user.id,
     )
 
-    db.add(new_incident)
+    db.add(incident)
     db.commit()
-    db.refresh(new_incident)
-    add_incident_to_faiss(request.text)
+    db.refresh(incident)
 
-    return AnalyzeResponse(
-        id=new_incident.id,
-        text=new_incident.text,
-        sentiment=new_incident.sentiment,
-        category=new_incident.category,
-        severity=new_incident.severity,
-        confidence=new_incident.confidence,
-        summary=new_incident.summary
-    )
+    return {
+        "text": text,
+        "category": result["category"],
+        "sentiment": result["label"],
+        "severity": result["severity"],
+        "confidence": result["score"],
+        "summary": result["summary"],
+        "id": incident.id,
+    }
 
 
 @router.get("/incidents")
@@ -85,110 +83,236 @@ def get_incidents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-
     incidents = db.query(Incident).filter(
-        Incident.id == current_user.id
-    ).all()
+        Incident.user_id == current_user.id
+    ).order_by(Incident.created_at.desc()).all()
 
-    return incidents
+    return [
+        {
+            "id": incident.id,
+            "input_text": incident.text or incident.extracted_text or incident.audio_transcription or f"{incident.analysis_type} analysis",
+            "severity": incident.severity or "MEDIUM",
+            "sentiment": incident.sentiment,
+            "category": incident.category,
+            "summary": incident.summary,
+            "analysis_type": incident.analysis_type or "text",
+            "image_label": incident.image_label,
+            "image_confidence": incident.image_confidence,
+            "audio_emotion": incident.audio_emotion,
+            "created_at": incident.created_at.isoformat() if incident.created_at else None,
+        }
+        for incident in incidents
+    ]
 
-@router.post("/similar-faiss", response_model=SimilarIncidentsResponse)
-def faiss_endpoint(request: SimilarIncidentsRequest):
-
-    results = search_similar_faiss(request.text)
-
-    return SimilarIncidentsResponse(
-        text=request.text,
-        similar_incidents=[
-            {"incident": inc, "score": float(score)} for inc, score in results
-        ]
-    )
 
 @router.post("/analyze/image")
-def analyze_image_endpoint(
-    file: UploadFile = File(...)
+def analyze_image_route(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+    file_path = save_upload_file(file)
 
-    file_path = f"temp_{file.filename}"
+    try:
+        result = analyze_image(file_path)
+        image_sentiment = analyze_image_sentiment(result["label"], result["confidence"])
 
-    with open(file_path, "wb") as f:
-        f.write(file.file.read())
+        incident = Incident(
+            image_label=result["label"],
+            image_confidence=result["confidence"],
+            sentiment=image_sentiment["label"],
+            confidence=image_sentiment["score"],
+            severity=image_sentiment["severity"],
+            category=image_sentiment["category"],
+            summary=image_sentiment["summary"],
+            analysis_type="image",
+            user_id=current_user.id,
+        )
+        
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
+        
+        return {
+            **result,
+            "sentiment": image_sentiment["label"],
+            "confidence": image_sentiment["score"],
+            "severity": image_sentiment["severity"],
+            "category": image_sentiment["category"],
+            "summary": image_sentiment["summary"],
+            "id": incident.id
+        }
+    finally:
+        os.unlink(file_path)
 
-    result = analyze_image(file_path)
 
-    os.remove(file_path)
+@router.post("/extract-text")
+def extract_text_route(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    file_path = save_upload_file(file)
 
-    return result
+    try:
+        text = extract_text_from_image(file_path)
+        
+        incident = Incident(
+            extracted_text=text,
+            analysis_type="text_extraction",
+            user_id=current_user.id,
+        )
+        
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
+        
+        return {"extracted_text": text, "id": incident.id}
+    finally:
+        os.unlink(file_path)
+
 
 @router.post("/analyze/audio")
-
-def analyze_audio_endpoint(
-    file: UploadFile = File(...)
+def analyze_audio_route(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
+    file_path = save_upload_file(file)
 
-    file_path = f"temp_{file.filename}"
+    try:
+        transcription = transcribe_audio(file_path)
+        emotion = detect_audio_emotion(file_path)
+        audio_sentiment = analyze_audio_sentiment(transcription, emotion)
+        
+        incident = Incident(
+            audio_transcription=transcription,
+            audio_emotion=emotion,
+            sentiment=audio_sentiment["label"],
+            confidence=audio_sentiment["score"],
+            severity=audio_sentiment["severity"],
+            category=audio_sentiment["category"],
+            summary=audio_sentiment["summary"],
+            analysis_type="audio",
+            user_id=current_user.id,
+        )
+        
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
 
-    with open(file_path, "wb") as f:
-        f.write(file.file.read())
+        return {
+            "transcription": transcription,
+            "emotion": emotion,
+            "sentiment": audio_sentiment["label"],
+            "confidence": audio_sentiment["score"],
+            "severity": audio_sentiment["severity"],
+            "category": audio_sentiment["category"],
+            "summary": audio_sentiment["summary"],
+            "id": incident.id,
+        }
+    finally:
+        os.unlink(file_path)
 
-    transcription = transcribe_audio(file_path)
-
-    emotion = detect_audio_emotion(file_path)
-
-    os.remove(file_path)
-
-    return {
-        "transcription": transcription,
-        "emotion": emotion
-    }
 
 @router.post("/analyze/multimodal")
-def multimodal_endpoint(
-    text: str = None,
-    image: UploadFile = File(None),
-    audio: UploadFile = File(None)
+def analyze_multimodal_route(
+    text: str = Form(None),
+    image: UploadFile | None = File(None),
+    audio: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    if not text and not image and not audio:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide text, image, or audio for multimodal analysis.",
+        )
 
-    image_path = None
-    audio_path = None
+    response = {}
 
-    # IMAGE
+    if text:
+        analysis = analyze_sentiment(text)
+        response["text_analysis"] = analysis
+
+        incident = Incident(
+            text=text,
+            sentiment=analysis["label"],
+            confidence=analysis["score"],
+            severity=analysis["severity"],
+            category=analysis["category"],
+            summary=analysis["summary"],
+            user_id=current_user.id,
+        )
+
+        db.add(incident)
+        db.commit()
+        db.refresh(incident)
+
     if image:
+        image_path = save_upload_file(image)
 
-        image_path = f"temp_{image.filename}"
+        try:
+            image_result = analyze_image(image_path)
+            image_sentiment = analyze_image_sentiment(image_result["label"], image_result["confidence"])
+            response["image_analysis"] = {
+                **image_result,
+                "sentiment": image_sentiment["label"],
+                "confidence": image_sentiment["score"],
+                "severity": image_sentiment["severity"],
+                "category": image_sentiment["category"],
+                "summary": image_sentiment["summary"],
+            }
+            
+            # Save image analysis to database
+            image_incident = Incident(
+                image_label=image_result["label"],
+                image_confidence=image_result["confidence"],
+                sentiment=image_sentiment["label"],
+                confidence=image_sentiment["score"],
+                severity=image_sentiment["severity"],
+                category=image_sentiment["category"],
+                summary=image_sentiment["summary"],
+                analysis_type="image",
+                user_id=current_user.id,
+            )
+            db.add(image_incident)
+            db.commit()
+        finally:
+            os.unlink(image_path)
 
-        with open(image_path, "wb") as f:
-            f.write(image.file.read())
-
-    # AUDIO
     if audio:
+        audio_path = save_upload_file(audio)
 
-        audio_path = f"temp_{audio.filename}"
+        try:
+            transcription = transcribe_audio(audio_path)
+            emotion = detect_audio_emotion(audio_path)
+            audio_sentiment = analyze_audio_sentiment(transcription, emotion)
+            response["audio_analysis"] = {
+                "transcription": transcription,
+                "emotion": emotion,
+                "sentiment": audio_sentiment["label"],
+                "confidence": audio_sentiment["score"],
+                "severity": audio_sentiment["severity"],
+                "category": audio_sentiment["category"],
+                "summary": audio_sentiment["summary"],
+            }
+            
+            # Save audio analysis to database
+            audio_incident = Incident(
+                audio_transcription=transcription,
+                audio_emotion=emotion,
+                sentiment=audio_sentiment["label"],
+                confidence=audio_sentiment["score"],
+                severity=audio_sentiment["severity"],
+                category=audio_sentiment["category"],
+                summary=audio_sentiment["summary"],
+                analysis_type="audio",
+                user_id=current_user.id,
+            )
+            db.add(audio_incident)
+            db.commit()
+        finally:
+            os.unlink(audio_path)
 
-        with open(audio_path, "wb") as f:
-            f.write(audio.file.read())
-
-    result = multimodal_analysis(
-        text=text,
-        image_path=image_path,
-        audio_path=audio_path
-    )
-
-    if image_path and os.path.exists(image_path):
-        os.remove(image_path)
-
-    if audio_path and os.path.exists(audio_path):
-        os.remove(audio_path)
-
-    return result
-
-@router.get("/forecast")
-def forecast_incidents(
-    db: Session = Depends(get_db)
-):
-
-    incidents = db.query(Incident).all()
-
-    result = generate_forecast(incidents)
-
-    return result
+    return response
