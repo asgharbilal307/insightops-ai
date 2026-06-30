@@ -2,6 +2,7 @@ from transformers import pipeline
 from PIL import Image
 import librosa
 import numpy as np
+import pytesseract
 
 image_classifier = pipeline(
     "image-classification",
@@ -21,6 +22,15 @@ def analyze_image(image_path: str):
         "label": top_result["label"],
         "confidence": round(top_result["score"], 3)
     }
+
+
+def extract_text_from_image(image_path: str):
+    """
+    Extract text from an image using OCR.
+    """
+    image = Image.open(image_path)
+    text = pytesseract.image_to_string(image)
+    return text.strip()
 
 
 audio_transcriber = pipeline(
